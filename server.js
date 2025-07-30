@@ -5,8 +5,9 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const compression = require('compression');
-const connectDB = require('./src/config/database');
-const errorHandler = require('./src/middleware/errorHandler');
+const path = require('path');
+const connectDB = require('./config/database');
+const errorHandler = require('./middleware/errorHandler');
 
 // Load environment variables
 dotenv.config();
@@ -42,22 +43,24 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // Static files
-app.use('/uploads', express.static('uploads'));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
-app.use('/api/auth', require('./src/routes/auth'));
-app.use('/api/songs', require('./src/routes/songs'));
-app.use('/api/users', require('./src/routes/users'));
-app.use('/api/playlists', require('./src/routes/playlists'));
-app.use('/api/ratings', require('./src/routes/ratings'));
-app.use('/api/analytics', require('./src/routes/analytics'));
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/songs', require('./routes/songs'));
+app.use('/api/users', require('./routes/users'));
+app.use('/api/playlists', require('./routes/playlists'));
+app.use('/api/ratings', require('./routes/ratings'));
+app.use('/api/analytics', require('./routes/analytics'));
+app.use('/api/stream', require('./routes/stream'));
 
 // Health check
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     success: true,
     message: 'Music Recommendation API is running',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
   });
 });
 
@@ -83,6 +86,14 @@ process.on('unhandledRejection', (err, promise) => {
   console.log(`Error: ${err.message}`);
   server.close(() => {
     process.exit(1);
+  });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received');
+  server.close(() => {
+    console.log('Process terminated');
   });
 });
 
