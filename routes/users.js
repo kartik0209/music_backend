@@ -11,7 +11,7 @@ const router = express.Router();
 // @access  Private (Admin)
 router.get('/', [auth, adminAuth], async (req, res) => {
   try {
-    const { page = 1, limit = 20, search, status } = req.query;
+    const { page = 1, limit = 20, search, status } = req.query; 
 
     const query = {};
     

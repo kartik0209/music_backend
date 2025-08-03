@@ -45,6 +45,13 @@ const songSchema = new mongoose.Schema({
   },
   language: {
     type: String,
+     enum: {
+    values: [
+      'english', 'hindi', 'gujarati', 'tamil', 'telugu', 'marathi', 
+      'bengali', 'kannada', 'malayalam', 'punjabi', 'urdu', 'odia',
+      'spanish', 'french', 'german', 'italian', 'portuguese', 'russian',
+      'arabic', 'chinese', 'japanese', 'korean', 'none'
+    ],},
     required: [true, 'Language is required'],
     trim: true
   },
@@ -66,7 +73,7 @@ const songSchema = new mongoose.Schema({
     size: Number,
     format: {
       type: String,
-      enum: ['mp3', 'wav', 'flac', 'm4a', 'ogg'],
+      enum: ['mp3','mpeg','wav', 'flac', 'm4a', 'ogg'],
       required: true
     },
     bitrate: Number,

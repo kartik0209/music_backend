@@ -51,7 +51,7 @@ app.use('/api/songs', require('./routes/songs'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/playlists', require('./routes/playlists'));
 app.use('/api/ratings', require('./routes/ratings'));
-app.use('/api/analytics', require('./routes/analytics'));
+app.use('/api/analytics', require('./routes/Analyitics'));
 app.use('/api/stream', require('./routes/stream'));
 
 // Health check

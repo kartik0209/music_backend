@@ -176,7 +176,7 @@ router.post('/', [
     body('title').notEmpty().withMessage('Title is required').trim(),
     body('artist').notEmpty().withMessage('Artist is required').trim(),
     body('duration').isNumeric().withMessage('Duration must be a number'),
-    body('genre').isArray({ min: 1 }).withMessage('At least one genre is required'),
+    //body('genre').isArray({ min: 1 }).withMessage('At least one genre is required'),
     body('language').notEmpty().withMessage('Language is required').trim()
   ]
 ], async (req, res) => {
