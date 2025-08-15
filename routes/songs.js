@@ -3,7 +3,7 @@ const Song = require('../models/Song');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const adminAuth = require('../middleware/adminAuth');
-const upload = require('../middleware/upload');
+const { uploadAudio, uploadImage } = require('../config/cloudinary');
 const { body, validationResult } = require('express-validator');
 
 const router = express.Router();
@@ -168,7 +168,7 @@ router.get('/:id', async (req, res) => {
 router.post('/', [
   auth,
   adminAuth,
-  upload.fields([
+  uploadAudio.fields([
     { name: 'audio', maxCount: 1 },
     { name: 'cover', maxCount: 1 }
   ]),
@@ -176,7 +176,7 @@ router.post('/', [
     body('title').notEmpty().withMessage('Title is required').trim(),
     body('artist').notEmpty().withMessage('Artist is required').trim(),
     body('duration').isNumeric().withMessage('Duration must be a number'),
-    //body('genre').isArray({ min: 1 }).withMessage('At least one genre is required'),
+    body('genre').notEmpty().withMessage('At least one genre is required'),
     body('language').notEmpty().withMessage('Language is required').trim()
   ]
 ], async (req, res) => {
@@ -220,33 +220,36 @@ router.post('/', [
       language,
       uploadedBy: req.user.userId,
       audioFile: {
-        filename: req.files.audio[0].filename,
+        cloudinaryId: req.files.audio[0].public_id,
+        url: req.files.audio[0].url,
+        secureUrl: req.files.audio[0].secure_url,
         originalName: req.files.audio[0].originalname,
-        path: req.files.audio[0].path,
-        size: req.files.audio[0].size,
-        format: req.files.audio[0].mimetype.split('/')[1]
+        size: req.files.audio[0].bytes,
+        format: req.files.audio[0].format
       }
     };
 
     // Optional fields
-    if (album) songData.album = JSON.parse(album);
+    if (album) songData.album = typeof album === 'string' ? JSON.parse(album) : album;
     if (subGenre) songData.subGenre = Array.isArray(subGenre) ? subGenre : [subGenre];
     if (mood) songData.mood = Array.isArray(mood) ? mood : [mood];
-    if (lyrics) songData.lyrics = JSON.parse(lyrics);
-    if (metadata) songData.metadata = JSON.parse(metadata);
+    if (lyrics) songData.lyrics = typeof lyrics === 'string' ? JSON.parse(lyrics) : lyrics;
+    if (metadata) songData.metadata = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
     if (tags) songData.tags = Array.isArray(tags) ? tags : [tags];
 
     // Handle cover image
     if (req.files.cover) {
       songData.coverImage = {
-        filename: req.files.cover[0].filename,
-        path: req.files.cover[0].path,
-        size: req.files.cover[0].size,
-        format: req.files.cover[0].mimetype.split('/')[1]
+        cloudinaryId: req.files.cover[0].public_id,
+        url: req.files.cover[0].url,
+        secureUrl: req.files.cover[0].secure_url,
+        size: req.files.cover[0].bytes,
+        format: req.files.cover[0].format
       };
     }
 
     const song = await Song.create(songData);
+    await song.populate('uploadedBy', 'username profile.avatar');
 
     res.status(201).json({
       success: true,
@@ -269,7 +272,7 @@ router.post('/', [
 router.put('/:id', [
   auth,
   adminAuth,
-  upload.single('cover')
+  uploadImage.single('cover')
 ], async (req, res) => {
   try {
     const song = await Song.findById(req.params.id);
@@ -287,10 +290,11 @@ router.put('/:id', [
     // Handle cover image upload
     if (req.file) {
       updates.coverImage = {
-        filename: req.file.filename,
-        path: req.file.path,
-        size: req.file.size,
-        format: req.file.mimetype.split('/')[1]
+        cloudinaryId: req.file.public_id,
+        url: req.file.url,
+        secureUrl: req.file.secure_url,
+        size: req.file.bytes,
+        format: req.file.format
       };
     }
 
@@ -398,8 +402,61 @@ router.post('/:id/play', auth, async (req, res) => {
   }
 });
 
-// @desc    Get song recommendations
-// @route   GET /api/songs/recommendations
+// @desc    Like/Unlike song
+// @route   POST /api/songs/:id/like
+// @access  Private
+router.post('/:id/like', auth, async (req, res) => {
+  try {
+    const songId = req.params.id;
+    const userId = req.user.userId;
+
+    const song = await Song.findById(songId);
+    if (!song) {
+      return res.status(404).json({
+        success: false,
+        message: 'Song not found'
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const result = user.toggleLikeSong(songId);
+    
+    // Update song like count
+    if (result.action === 'liked') {
+      song.likeCount += 1;
+    } else {
+      song.likeCount = Math.max(0, song.likeCount - 1);
+    }
+
+    await Promise.all([user.save(), song.save()]);
+
+    res.json({
+      success: true,
+      message: `Song ${result.action}`,
+      data: {
+        action: result.action,
+        likeCount: song.likeCount
+      }
+    });
+  } catch (error) {
+    console.error('Like song error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to like/unlike song',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get user's recommendation
+// @route   GET /api/songs/user/recommendations
 // @access  Private
 router.get('/user/recommendations', auth, async (req, res) => {
   try {
@@ -536,10 +593,12 @@ router.get('/:id/download', auth, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Download count updated',
+      message: 'Download link generated',
       data: {
-        downloadUrl: song.audioUrl,
-        downloadCount: song.downloadCount
+        downloadUrl: song.audioFile.secureUrl,
+        downloadCount: song.downloadCount,
+        title: song.title,
+        artist: song.artist
       }
     });
   } catch (error) {
@@ -547,6 +606,124 @@ router.get('/:id/download', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to process download',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get user's liked songs
+// @route   GET /api/songs/user/liked
+// @access  Private
+router.get('/user/liked', auth, async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+
+    const user = await User.findById(req.user.userId)
+      .populate({
+        path: 'likedSongs.song',
+        populate: {
+          path: 'uploadedBy',
+          select: 'username profile.avatar'
+        }
+      });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Filter out deleted songs and paginate
+    const validLikedSongs = user.likedSongs.filter(item => item.song);
+    const total = validLikedSongs.length;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + parseInt(limit);
+    const paginatedLikedSongs = validLikedSongs.slice(startIndex, endIndex);
+
+    const songs = paginatedLikedSongs.map(item => ({
+      ...item.song.toObject(),
+      likedAt: item.likedAt
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        songs,
+        pagination: {
+          current: parseInt(page),
+          pages: Math.ceil(total / limit),
+          total,
+          hasNext: endIndex < total,
+          hasPrev: page > 1
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get liked songs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch liked songs',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get listening history
+// @route   GET /api/songs/user/history
+// @access  Private
+router.get('/user/history', auth, async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+
+    const user = await User.findById(req.user.userId)
+      .populate({
+        path: 'listeningHistory.song',
+        populate: {
+          path: 'uploadedBy',
+          select: 'username profile.avatar'
+        }
+      });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Filter out deleted songs and paginate
+    const validHistory = user.listeningHistory.filter(item => item.song);
+    const total = validHistory.length;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + parseInt(limit);
+    const paginatedHistory = validHistory.slice(startIndex, endIndex);
+
+    const history = paginatedHistory.map(item => ({
+      song: item.song,
+      playedAt: item.playedAt,
+      duration: item.duration,
+      completed: item.completed
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        history,
+        pagination: {
+          current: parseInt(page),
+          pages: Math.ceil(total / limit),
+          total,
+          hasNext: endIndex < total,
+          hasPrev: page > 1
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get listening history error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch listening history',
       error: error.message
     });
   }

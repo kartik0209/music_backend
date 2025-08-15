@@ -1,8 +1,9 @@
 const express = require("express");
 const Playlist = require("../models/Playlist");
+const Song = require("../models/Song");
 const User = require("../models/User");
 const auth = require("../middleware/auth");
-const upload = require("../middleware/upload");
+const { uploadPlaylistCover } = require("../config/cloudinary");
 const { body, validationResult } = require("express-validator");
 
 const router = express.Router();
@@ -176,7 +177,7 @@ router.post(
   "/",
   [
     auth,
-    upload.single("coverImage"),
+    uploadPlaylistCover.single("coverImage"),
     [
       body("name").notEmpty().withMessage("Playlist name is required").trim(),
       body("description").optional().trim(),
@@ -212,10 +213,11 @@ router.post(
       // Handle cover image upload
       if (req.file) {
         playlistData.coverImage = {
-          filename: req.file.filename,
-          path: req.file.path,
-          size: req.file.size,
-          format: req.file.mimetype.split("/")[1],
+          cloudinaryId: req.file.public_id,
+          url: req.file.url,
+          secureUrl: req.file.secure_url,
+          size: req.file.bytes,
+          format: req.file.format,
         };
       }
 
@@ -255,7 +257,7 @@ router.post(
 // @desc    Update playlist
 // @route   PUT /api/playlists/:id
 // @access  Private
-router.put("/:id", [auth, upload.single("coverImage")], async (req, res) => {
+router.put("/:id", [auth, uploadPlaylistCover.single("coverImage")], async (req, res) => {
   try {
     const playlist = await Playlist.findById(req.params.id);
 
@@ -279,10 +281,11 @@ router.put("/:id", [auth, upload.single("coverImage")], async (req, res) => {
     // Handle cover image upload
     if (req.file) {
       updates.coverImage = {
-        filename: req.file.filename,
-        path: req.file.path,
-        size: req.file.size,
-        format: req.file.mimetype.split("/")[1],
+        cloudinaryId: req.file.public_id,
+        url: req.file.url,
+        secureUrl: req.file.secure_url,
+        size: req.file.bytes,
+        format: req.file.format,
       };
     }
 
@@ -318,7 +321,6 @@ router.put("/:id", [auth, upload.single("coverImage")], async (req, res) => {
 // @desc    Delete playlist
 // @route   DELETE /api/playlists/:id
 // @access  Private
-
 router.delete("/:id", auth, async (req, res) => {
   try {
     const playlist = await Playlist.findById(req.params.id);
@@ -330,18 +332,20 @@ router.delete("/:id", auth, async (req, res) => {
       });
     }
 
-    // Check permissions
-    if (!playlist.hasPermission(req.user.userId, "delete")) {
+    // Check permissions (owner or admin)
+    if (playlist.owner.toString() !== req.user.userId && req.user.role !== 'admin') {
       return res.status(403).json({
         success: false,
         message: "Access denied",
       });
     }
 
-    await playlist.remove();
+    // Soft delete
+    playlist.status = 'deleted';
+    await playlist.save();
 
     // Update user's playlist count
-    await User.findByIdAndUpdate(req.user.userId, {
+    await User.findByIdAndUpdate(playlist.owner, {
       $inc: { "activity.playlistsCreated": -1 },
     });
 
@@ -358,4 +362,279 @@ router.delete("/:id", auth, async (req, res) => {
     });
   }
 });
+
+// @desc    Add song to playlist
+// @route   POST /api/playlists/:id/songs
+// @access  Private
+router.post('/:id/songs', [
+  auth,
+  [
+    body('songId').notEmpty().withMessage('Song ID is required')
+  ]
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { songId } = req.body;
+    const playlistId = req.params.id;
+
+    const playlist = await Playlist.findById(playlistId);
+    if (!playlist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Playlist not found'
+      });
+    }
+
+    // Check permissions
+    if (!playlist.hasPermission(req.user.userId, 'edit')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    // Check if song exists
+    const song = await Song.findById(songId);
+    if (!song || song.status !== 'active') {
+      return res.status(404).json({
+        success: false,
+        message: 'Song not found or inactive'
+      });
+    }
+
+    // Add song to playlist
+    await playlist.addSong(songId, req.user.userId);
+
+    // Populate the added song
+    await playlist.populate({
+      path: 'songs.song',
+      populate: {
+        path: 'uploadedBy',
+        select: 'username profile.avatar'
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'Song added to playlist',
+      data: { playlist }
+    });
+  } catch (error) {
+    if (error.message === 'Song already exists in playlist') {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
+
+    console.error('Add song to playlist error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add song to playlist',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Remove song from playlist
+// @route   DELETE /api/playlists/:id/songs/:songId
+// @access  Private
+router.delete('/:id/songs/:songId', auth, async (req, res) => {
+  try {
+    const { id: playlistId, songId } = req.params;
+
+    const playlist = await Playlist.findById(playlistId);
+    if (!playlist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Playlist not found'
+      });
+    }
+
+    // Check permissions
+    if (!playlist.hasPermission(req.user.userId, 'edit')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    // Remove song from playlist
+    await playlist.removeSong(songId);
+
+    res.json({
+      success: true,
+      message: 'Song removed from playlist'
+    });
+  } catch (error) {
+    if (error.message === 'Song not found in playlist') {
+      return res.status(404).json({
+        success: false,
+        message: error.message
+      });
+    }
+
+    console.error('Remove song from playlist error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to remove song from playlist',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Reorder songs in playlist
+// @route   PUT /api/playlists/:id/songs/:songId/position
+// @access  Private
+router.put('/:id/songs/:songId/position', [
+  auth,
+  [
+    body('position').isInt({ min: 1 }).withMessage('Position must be a positive integer')
+  ]
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { id: playlistId, songId } = req.params;
+    const { position } = req.body;
+
+    const playlist = await Playlist.findById(playlistId);
+    if (!playlist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Playlist not found'
+      });
+    }
+
+    // Check permissions
+    if (!playlist.hasPermission(req.user.userId, 'edit')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    // Reorder songs
+    await playlist.reorderSongs(songId, parseInt(position));
+
+    res.json({
+      success: true,
+      message: 'Song position updated',
+      data: { playlist }
+    });
+  } catch (error) {
+    if (error.message === 'Song not found in playlist') {
+      return res.status(404).json({
+        success: false,
+        message: error.message
+      });
+    }
+
+    console.error('Reorder playlist songs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reorder songs',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Follow/Unfollow playlist
+// @route   POST /api/playlists/:id/follow
+// @access  Private
+router.post('/:id/follow', auth, async (req, res) => {
+  try {
+    const playlist = await Playlist.findById(req.params.id);
+
+    if (!playlist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Playlist not found'
+      });
+    }
+
+    // Can't follow your own playlist
+    if (playlist.owner.toString() === req.user.userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot follow your own playlist'
+      });
+    }
+
+    const result = playlist.toggleFollow(req.user.userId);
+    await playlist.save();
+
+    res.json({
+      success: true,
+      message: `Playlist ${result.action}`,
+      data: {
+        action: result.action,
+        followerCount: playlist.followers.length
+      }
+    });
+  } catch (error) {
+    console.error('Follow playlist error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to follow/unfollow playlist',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Play playlist (increment play count)
+// @route   POST /api/playlists/:id/play
+// @access  Private
+router.post('/:id/play', auth, async (req, res) => {
+  try {
+    const playlist = await Playlist.findById(req.params.id);
+
+    if (!playlist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Playlist not found'
+      });
+    }
+
+    // Check if user has permission to play
+    if (!playlist.hasPermission(req.user.userId, 'view')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied to this playlist'
+      });
+    }
+
+    // Increment play count
+    await playlist.incrementPlayCount();
+
+    res.json({
+      success: true,
+      message: 'Playlist play count updated',
+      data: { playCount: playlist.playCount }
+    });
+  } catch (error) {
+    console.error('Play playlist error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update play count',
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;

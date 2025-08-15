@@ -13,8 +13,9 @@ const playlistSchema = new mongoose.Schema({
     maxlength: [500, 'Description cannot exceed 500 characters']
   },
   coverImage: {
-    filename: String,
-    path: String,
+    cloudinaryId: String,
+    url: String,
+    secureUrl: String,
     size: Number,
     format: String
   },
@@ -150,12 +151,12 @@ playlistSchema.virtual('followerCount').get(function() {
   return this.followers.length;
 });
 
-// Virtual for cover URL
+// Virtual for cover URL (use Cloudinary URL)
 playlistSchema.virtual('coverUrl').get(function() {
-  if (this.coverImage && this.coverImage.path) {
-    return `/uploads/playlists/${this.coverImage.filename}`;
+  if (this.coverImage && this.coverImage.secureUrl) {
+    return this.coverImage.secureUrl;
   }
-  return '/uploads/playlists/default-playlist.jpg';
+  return 'https://via.placeholder.com/300x300/1a1a1a/ffffff?text=Playlist'; // Default placeholder
 });
 
 // Virtual for formatted duration
@@ -177,95 +178,6 @@ playlistSchema.pre('save', async function(next) {
   }
   next();
 });
-
-// Method to add song
-playlistSchema.methods.addSong = function(songId, userId) {
-  const existingSong = this.songs.find(s => s.song.toString() === songId.toString());
-  if (existingSong) {
-    throw new Error('Song already exists in playlist');
-  }
-  
-  const position = this.songs.length + 1;
-  this.songs.push({
-    song: songId,
-    addedBy: userId,
-    position
-  });
-  
-  return this.save();
-};
-
-// Method to remove song
-playlistSchema.methods.removeSong = function(songId) {
-  const songIndex = this.songs.findIndex(s => s.song.toString() === songId.toString());
-  if (songIndex === -1) {
-    throw new Error('Song not found in playlist');
-  }
-  
-  this.songs.splice(songIndex, 1);
-  
-  // Reorder positions
-  this.songs.forEach((song, index) => {
-    song.position = index + 1;
-  });
-  
-  return this.save();
-};
-
-// Method to reorder songs
-playlistSchema.methods.reorderSongs = function(songId, newPosition) {
-  const songIndex = this.songs.findIndex(s => s.song.toString() === songId.toString());
-  if (songIndex === -1) {
-    throw new Error('Song not found in playlist');
-  }
-  
-  const song = this.songs.splice(songIndex, 1)[0];
-  this.songs.splice(newPosition - 1, 0, song);
-  
-  // Update all positions
-  this.songs.forEach((song, index) => {
-    song.position = index + 1;
-  });
-  
-  return this.save();
-};
-
-// Method to update metadata
-playlistSchema.methods.updateMetadata = async function() {
-  if (!this.populated('songs.song')) {
-    await this.populate('songs.song');
-  }
-  
-  let totalDuration = 0;
-  const genres = new Set();
-  const languages = new Set();
-  let totalRating = 0;
-  let ratedSongs = 0;
-  
-  this.songs.forEach(item => {
-    if (item.song) {
-      totalDuration += item.song.duration || 0;
-      
-      if (item.song.genre) {
-        item.song.genre.forEach(g => genres.add(g));
-      }
-      
-      if (item.song.language) {
-        languages.add(item.song.language);
-      }
-      
-      if (item.song.ratings && item.song.ratings.average > 0) {
-        totalRating += item.song.ratings.average;
-        ratedSongs++;
-      }
-    }
-  });
-  
-  this.metadata.totalDuration = totalDuration;
-  this.metadata.genres = Array.from(genres);
-  this.metadata.languages = Array.from(languages);
-  this.metadata.averageRating = ratedSongs > 0 ? totalRating / ratedSongs : 0;
-};
 
 // Method to add collaborator
 playlistSchema.methods.addCollaborator = function(userId, permissions = 'view') {
@@ -392,56 +304,93 @@ playlistSchema.statics.getFeatured = function(limit = 10) {
     .populate('owner', 'username profile.firstName profile.lastName profile.avatar');
 };
 
-// Method for auto-update functionality
-playlistSchema.methods.performAutoUpdate = async function() {
-  if (!this.autoUpdate.enabled) return;
-  
-  const Song = mongoose.model('Song');
-  const criteria = this.autoUpdate.criteria;
-  const query = { status: 'active' };
-  
-  // Apply auto-update criteria
-  if (criteria.genre && criteria.genre.length > 0) {
-    query.genre = { $in: criteria.genre };
+module.exports = mongoose.model('Playlist', playlistSchema);
+playlistSchema.methods.addSong = function(songId, userId) {
+  const existingSong = this.songs.find(s => s.song.toString() === songId.toString());
+  if (existingSong) {
+    throw new Error('Song already exists in playlist');
   }
   
-  if (criteria.mood && criteria.mood.length > 0) {
-    query.mood = { $in: criteria.mood };
-  }
-  
-  if (criteria.artist && criteria.artist.length > 0) {
-    query.artist = { $in: criteria.artist };
-  }
-  
-  if (criteria.minRating) {
-    query['ratings.average'] = { $gte: criteria.minRating };
-  }
-  
-  // Get current song IDs to avoid duplicates
-  const currentSongIds = this.songs.map(s => s.song.toString());
-  query._id = { $nin: currentSongIds };
-  
-  // Find new songs
-  const newSongs = await Song.find(query)
-    .sort({ 'ratings.average': -1, playCount: -1 })
-    .limit(criteria.maxSongs - this.songs.length);
-  
-  // Add new songs
-  newSongs.forEach((song, index) => {
-    this.songs.push({
-      song: song._id,
-      addedBy: this.owner,
-      position: this.songs.length + 1
-    });
+  const position = this.songs.length + 1;
+  this.songs.push({
+    song: songId,
+    addedBy: userId,
+    position
   });
   
-  // Remove excess songs if needed
-  if (this.songs.length > criteria.maxSongs) {
-    this.songs = this.songs.slice(0, criteria.maxSongs);
-  }
-  
-  this.autoUpdate.lastUpdated = new Date();
   return this.save();
 };
 
-module.exports = mongoose.model('Playlist', playlistSchema);
+// Method to remove song
+playlistSchema.methods.removeSong = function(songId) {
+  const songIndex = this.songs.findIndex(s => s.song.toString() === songId.toString());
+  if (songIndex === -1) {
+    throw new Error('Song not found in playlist');
+  }
+  
+  this.songs.splice(songIndex, 1);
+  
+  // Reorder positions
+  this.songs.forEach((song, index) => {
+    song.position = index + 1;
+  });
+  
+  return this.save();
+};
+
+// Method to reorder songs
+playlistSchema.methods.reorderSongs = function(songId, newPosition) {
+  const songIndex = this.songs.findIndex(s => s.song.toString() === songId.toString());
+  if (songIndex === -1) {
+    throw new Error('Song not found in playlist');
+  }
+  
+  const song = this.songs.splice(songIndex, 1)[0];
+  this.songs.splice(newPosition - 1, 0, song);
+  
+  // Update all positions
+  this.songs.forEach((song, index) => {
+    song.position = index + 1;
+  });
+  
+  return this.save();
+};
+
+// Method to update metadata
+playlistSchema.methods.updateMetadata = async function() {
+  if (!this.populated('songs.song')) {
+    await this.populate('songs.song');
+  }
+  
+  let totalDuration = 0;
+  const genres = new Set();
+  const languages = new Set();
+  let totalRating = 0;
+  let ratedSongs = 0;
+  
+  this.songs.forEach(item => {
+    if (item.song) {
+      totalDuration += item.song.duration || 0;
+      
+      if (item.song.genre) {
+        item.song.genre.forEach(g => genres.add(g));
+      }
+      
+      if (item.song.language) {
+        languages.add(item.song.language);
+      }
+      
+      if (item.song.ratings && item.song.ratings.average > 0) {
+        totalRating += item.song.ratings.average;
+        ratedSongs++;
+      }
+    }
+  });
+  
+  this.metadata.totalDuration = totalDuration;
+  this.metadata.genres = Array.from(genres);
+  this.metadata.languages = Array.from(languages);
+  this.metadata.averageRating = ratedSongs > 0 ? totalRating / ratedSongs : 0;
+};
+
+// Method to ad

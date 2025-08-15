@@ -47,8 +47,11 @@ const userSchema = new mongoose.Schema({
       maxlength: [500, 'Bio cannot exceed 500 characters']
     },
     avatar: {
-      type: String,
-      default: null
+      cloudinaryId: String,
+      url: String,
+      secureUrl: String,
+      size: Number,
+      format: String
     },
     dateOfBirth: Date,
     country: String,
@@ -99,6 +102,10 @@ const userSchema = new mongoose.Schema({
     rating: { type: Number, min: 1, max: 5 },
     ratedAt: { type: Date, default: Date.now }
   }],
+  likedSongs: [{
+    song: { type: mongoose.Schema.Types.ObjectId, ref: 'Song' },
+    likedAt: { type: Date, default: Date.now }
+  }],
   isEmailVerified: {
     type: Boolean,
     default: false
@@ -140,6 +147,14 @@ userSchema.virtual('fullName').get(function() {
     return `${this.profile.firstName} ${this.profile.lastName}`;
   }
   return this.profile.firstName || this.profile.lastName || this.username;
+});
+
+// Virtual for avatar URL
+userSchema.virtual('avatarUrl').get(function() {
+  if (this.profile.avatar && this.profile.avatar.secureUrl) {
+    return this.profile.avatar.secureUrl;
+  }
+  return `https://ui-avatars.com/api/?name=${encodeURIComponent(this.username)}&background=1a1a1a&color=ffffff&size=200`;
 });
 
 // Pre-save middleware to hash password
@@ -232,6 +247,24 @@ userSchema.methods.rateSong = function(songId, rating) {
       ratedAt: new Date()
     });
     this.activity.ratingsGiven += 1;
+  }
+};
+
+// Method to toggle like song
+userSchema.methods.toggleLikeSong = function(songId) {
+  const likedIndex = this.likedSongs.findIndex(l => l.song.toString() === songId.toString());
+  
+  if (likedIndex > -1) {
+    // Unlike
+    this.likedSongs.splice(likedIndex, 1);
+    return { action: 'unliked' };
+  } else {
+    // Like
+    this.likedSongs.push({
+      song: songId,
+      likedAt: new Date()
+    });
+    return { action: 'liked' };
   }
 };
 

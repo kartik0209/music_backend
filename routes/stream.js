@@ -1,13 +1,12 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const Song = require('../models/Song');
 const User = require('../models/User');
+const Playlist = require('../models/Playlist');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
 
-// @desc    Stream audio file
+// @desc    Stream audio file (Cloudinary URL)
 // @route   GET /api/stream/audio/:id
 // @access  Private
 router.get('/audio/:id', auth, async (req, res) => {
@@ -29,53 +28,7 @@ router.get('/audio/:id', auth, async (req, res) => {
       });
     }
 
-    const audioPath = path.join(__dirname, '..', song.audioFile.path);
-
-    // Check if file exists
-    if (!fs.existsSync(audioPath)) {
-      return res.status(404).json({
-        success: false,
-        message: 'Audio file not found'
-      });
-    }
-
-    const stat = fs.statSync(audioPath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
-
-    if (range) {
-      // Handle range requests for seeking
-      const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunksize = (end - start) + 1;
-      
-      const file = fs.createReadStream(audioPath, { start, end });
-      
-      const head = {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': `audio/${song.audioFile.format}`,
-        'Cache-Control': 'public, max-age=3600'
-      };
-      
-      res.writeHead(206, head);
-      file.pipe(res);
-    } else {
-      // Regular streaming
-      const head = {
-        'Content-Length': fileSize,
-        'Content-Type': `audio/${song.audioFile.format}`,
-        'Accept-Ranges': 'bytes',
-        'Cache-Control': 'public, max-age=3600'
-      };
-      
-      res.writeHead(200, head);
-      fs.createReadStream(audioPath).pipe(res);
-    }
-
-    // Increment play count (throttled to prevent abuse)
+    // Throttled play count increment (prevent abuse)
     const user = await User.findById(req.user.userId);
     if (user) {
       const lastPlay = user.listeningHistory.find(h => 
@@ -92,11 +45,95 @@ router.get('/audio/:id', auth, async (req, res) => {
         await song.incrementPlayCount();
       }
     }
+
+    // Return Cloudinary streaming URL with proper headers
+    res.json({
+      success: true,
+      data: {
+        streamUrl: song.audioFile.secureUrl,
+        song: {
+          id: song._id,
+          title: song.title,
+          artist: song.artist,
+          duration: song.duration,
+          coverUrl: song.coverUrl
+        }
+      }
+    });
+
   } catch (error) {
     console.error('Stream audio error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to stream audio',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get streaming URL with quality options
+// @route   GET /api/stream/url/:id
+// @access  Private
+router.get('/url/:id', auth, async (req, res) => {
+  try {
+    const songId = req.params.id;
+    const { quality = 'auto' } = req.query;
+
+    const song = await Song.findById(songId);
+    if (!song) {
+      return res.status(404).json({
+        success: false,
+        message: 'Song not found'
+      });
+    }
+
+    if (song.status !== 'active') {
+      return res.status(403).json({
+        success: false,
+        message: 'Song is not available for streaming'
+      });
+    }
+
+    // Generate streaming URL with quality parameter
+    let streamUrl = song.audioFile.secureUrl;
+    
+    // Add quality transformation if needed
+    if (quality !== 'auto' && quality !== 'original') {
+      const qualityMap = {
+        'low': 'br_64',
+        'medium': 'br_128',
+        'high': 'br_320'
+      };
+      
+      if (qualityMap[quality]) {
+        // Insert quality parameter in Cloudinary URL
+        streamUrl = song.audioFile.secureUrl.replace('/upload/', `/upload/q_auto,${qualityMap[quality]}/`);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        streamUrl,
+        originalUrl: song.audioFile.secureUrl,
+        quality,
+        song: {
+          id: song._id,
+          title: song.title,
+          artist: song.artist,
+          duration: song.duration,
+          formattedDuration: song.formattedDuration,
+          coverUrl: song.coverUrl,
+          genre: song.genre,
+          language: song.language
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get stream URL error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get stream URL',
       error: error.message
     });
   }
@@ -108,8 +145,9 @@ router.get('/audio/:id', auth, async (req, res) => {
 router.get('/cover/:id', async (req, res) => {
   try {
     const songId = req.params.id;
-    const song = await Song.findById(songId);
+    const { size = 'medium' } = req.query;
 
+    const song = await Song.findById(songId);
     if (!song) {
       return res.status(404).json({
         success: false,
@@ -117,51 +155,40 @@ router.get('/cover/:id', async (req, res) => {
       });
     }
 
-    let imagePath;
-    if (song.coverImage && song.coverImage.path) {
-      imagePath = path.join(__dirname, '..', song.coverImage.path);
-    } else {
-      // Return default cover
-      imagePath = path.join(__dirname, '..', 'uploads', 'covers', 'default-cover.jpg');
+    let coverUrl = song.coverUrl;
+    
+    // Apply size transformation
+    if (song.coverImage && song.coverImage.secureUrl) {
+      const sizeMap = {
+        'small': 'w_150,h_150,c_fill',
+        'medium': 'w_300,h_300,c_fill', 
+        'large': 'w_500,h_500,c_fill',
+        'original': ''
+      };
+
+      if (sizeMap[size] && size !== 'original') {
+        coverUrl = song.coverImage.secureUrl.replace('/upload/', `/upload/${sizeMap[size]}/`);
+      }
     }
 
-    // Check if file exists
-    if (!fs.existsSync(imagePath)) {
-      imagePath = path.join(__dirname, '..', 'uploads', 'covers', 'default-cover.jpg');
-    }
-
-    const stat = fs.statSync(imagePath);
-    const ext = path.extname(imagePath).toLowerCase();
-    let contentType = 'image/jpeg';
-
-    switch (ext) {
-      case '.png':
-        contentType = 'image/png';
-        break;
-      case '.webp':
-        contentType = 'image/webp';
-        break;
-      case '.gif':
-        contentType = 'image/gif';
-        break;
-    }
-
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Length', stat.size);
-    res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
-
-    fs.createReadStream(imagePath).pipe(res);
+    res.json({
+      success: true,
+      data: {
+        coverUrl,
+        originalUrl: song.coverImage?.secureUrl || song.coverUrl
+      }
+    });
   } catch (error) {
     console.error('Stream cover error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to stream cover image',
+      message: 'Failed to get cover image',
       error: error.message
     });
   }
 });
 
-// @desc    Get audio metadata
+// @desc    Get audio metadata for player
 // @route   GET /api/stream/metadata/:id
 // @access  Private
 router.get('/metadata/:id', auth, async (req, res) => {
@@ -184,6 +211,13 @@ router.get('/metadata/:id', auth, async (req, res) => {
       });
     }
 
+    // Check if user has liked this song
+    const user = await User.findById(req.user.userId);
+    const isLiked = user && user.likedSongs.some(like => like.song.toString() === songId);
+
+    // Get user's rating for this song
+    const userRating = user && user.ratings.find(rating => rating.song.toString() === songId);
+
     res.json({
       success: true,
       data: {
@@ -195,12 +229,17 @@ router.get('/metadata/:id', auth, async (req, res) => {
         formattedDuration: song.formattedDuration,
         genre: song.genre,
         language: song.language,
+        mood: song.mood,
         coverUrl: song.coverUrl,
-        audioUrl: song.audioUrl,
+        streamUrl: song.audioFile.secureUrl,
         playCount: song.playCount,
+        likeCount: song.likeCount,
+        isLiked,
+        userRating: userRating ? userRating.rating : null,
         ratings: song.ratings,
         uploadedBy: song.uploadedBy,
-        metadata: song.metadata
+        metadata: song.metadata,
+        lyrics: song.lyrics
       }
     });
   } catch (error) {
@@ -235,32 +274,32 @@ router.get('/download/:id', auth, async (req, res) => {
       });
     }
 
-    const audioPath = path.join(__dirname, '..', song.audioFile.path);
-
-    // Check if file exists
-    if (!fs.existsSync(audioPath)) {
-      return res.status(404).json({
-        success: false,
-        message: 'Audio file not found'
-      });
-    }
-
     // Increment download count
     await song.incrementDownloadCount();
 
-    const stat = fs.statSync(audioPath);
-    const filename = `${song.title} - ${song.artist}.${song.audioFile.format}`;
+    // Generate download URL with proper filename
+    const filename = `${song.title} - ${song.artist}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    let downloadUrl = song.audioFile.secureUrl;
+    
+    // Add download flag to Cloudinary URL
+    downloadUrl = downloadUrl.replace('/upload/', '/upload/fl_attachment/');
 
-    res.setHeader('Content-Type', `audio/${song.audioFile.format}`);
-    res.setHeader('Content-Length', stat.size);
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-
-    fs.createReadStream(audioPath).pipe(res);
+    res.json({
+      success: true,
+      message: 'Download link generated',
+      data: {
+        downloadUrl,
+        filename: `${filename}.${song.audioFile.format}`,
+        size: song.audioFile.size,
+        format: song.audioFile.format,
+        downloadCount: song.downloadCount
+      }
+    });
   } catch (error) {
     console.error('Download audio error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to download audio',
+      message: 'Failed to generate download link',
       error: error.message
     });
   }
@@ -281,14 +320,35 @@ router.get('/quality/:id', auth, async (req, res) => {
       });
     }
 
-    // In a real implementation, you might have multiple quality versions
+    // Available quality options with Cloudinary transformations
     const qualityOptions = [
       {
-        quality: song.audioFile.quality || 'medium',
-        bitrate: song.audioFile.bitrate || 128,
-        format: song.audioFile.format,
-        size: song.audioFile.size,
-        url: `/api/stream/audio/${songId}`
+        quality: 'low',
+        label: 'Low (64 kbps)',
+        bitrate: 64,
+        url: song.audioFile.secureUrl.replace('/upload/', '/upload/q_auto,br_64/'),
+        size: Math.round(song.audioFile.size * 0.3) // Approximate
+      },
+      {
+        quality: 'medium',
+        label: 'Medium (128 kbps)',
+        bitrate: 128,
+        url: song.audioFile.secureUrl.replace('/upload/', '/upload/q_auto,br_128/'),
+        size: Math.round(song.audioFile.size * 0.6) // Approximate
+      },
+      {
+        quality: 'high',
+        label: 'High (320 kbps)',
+        bitrate: 320,
+        url: song.audioFile.secureUrl.replace('/upload/', '/upload/q_auto,br_320/'),
+        size: Math.round(song.audioFile.size * 0.9) // Approximate
+      },
+      {
+        quality: 'original',
+        label: 'Original',
+        bitrate: song.audioFile.bitrate || 'Unknown',
+        url: song.audioFile.secureUrl,
+        size: song.audioFile.size
       }
     ];
 
@@ -296,7 +356,8 @@ router.get('/quality/:id', auth, async (req, res) => {
       success: true,
       data: {
         available: qualityOptions,
-        recommended: qualityOptions[0]
+        recommended: qualityOptions[1], // Medium quality
+        currentFormat: song.audioFile.format
       }
     });
   } catch (error) {
@@ -309,13 +370,13 @@ router.get('/quality/:id', auth, async (req, res) => {
   }
 });
 
-// @desc    Report playback completion
-// @route   POST /api/stream/complete/:id
+// @desc    Report playback progress/completion
+// @route   POST /api/stream/progress/:id
 // @access  Private
-router.post('/complete/:id', auth, async (req, res) => {
+router.post('/progress/:id', auth, async (req, res) => {
   try {
     const songId = req.params.id;
-    const { duration, percentage } = req.body;
+    const { currentTime, duration, percentage, completed = false } = req.body;
 
     const song = await Song.findById(songId);
     if (!song) {
@@ -333,39 +394,48 @@ router.post('/complete/:id', auth, async (req, res) => {
       });
     }
 
-    // Find the latest listening history entry for this song
-    const historyEntry = user.listeningHistory.find(h => 
+    // Update or create listening history entry
+    const recentEntry = user.listeningHistory.find(h => 
       h.song.toString() === songId && 
       h.playedAt > new Date(Date.now() - 10 * 60 * 1000) // Within last 10 minutes
     );
 
-    if (historyEntry) {
-      historyEntry.duration = duration || historyEntry.duration;
-      historyEntry.completed = percentage >= 80; // Consider completed if 80% played
-      await user.save();
+    if (recentEntry) {
+      recentEntry.duration = currentTime || recentEntry.duration;
+      recentEntry.completed = completed || (percentage >= 80);
+    } else {
+      // Create new entry if none exists recently
+      user.addToHistory(songId, currentTime || 0, completed);
     }
+
+    await user.save();
 
     res.json({
       success: true,
-      message: 'Playback completion recorded'
+      message: 'Progress updated',
+      data: {
+        currentTime,
+        percentage,
+        completed: completed || (percentage >= 80)
+      }
     });
   } catch (error) {
-    console.error('Report completion error:', error);
+    console.error('Update progress error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to report completion',
+      message: 'Failed to update progress',
       error: error.message
     });
   }
 });
 
-// @desc    Get playlist stream URLs
+// @desc    Get playlist stream data
 // @route   GET /api/stream/playlist/:id
 // @access  Private
 router.get('/playlist/:id', auth, async (req, res) => {
   try {
     const playlistId = req.params.id;
-    const Playlist = require('../models/Playlist');
+    const { shuffle = false } = req.query;
     
     const playlist = await Playlist.findById(playlistId)
       .populate({
@@ -392,20 +462,34 @@ router.get('/playlist/:id', auth, async (req, res) => {
       });
     }
 
-    // Filter out null songs (inactive songs)
-    const validSongs = playlist.songs.filter(item => item.song);
+    // Filter out null songs (inactive songs) and prepare stream data
+    let validSongs = playlist.songs.filter(item => item.song);
 
-    const streamData = validSongs.map(item => ({
+    // Shuffle if requested
+    if (shuffle === 'true') {
+      validSongs = validSongs.sort(() => Math.random() - 0.5);
+    }
+
+    const streamData = validSongs.map((item, index) => ({
       id: item.song._id,
       title: item.song.title,
       artist: item.song.artist,
+      album: item.song.album,
       duration: item.song.duration,
       formattedDuration: item.song.formattedDuration,
+      genre: item.song.genre,
+      language: item.song.language,
       coverUrl: item.song.coverUrl,
-      audioUrl: item.song.audioUrl,
-      position: item.position,
-      addedAt: item.addedAt
+      streamUrl: item.song.audioFile.secureUrl,
+      playCount: item.song.playCount,
+      uploadedBy: item.song.uploadedBy,
+      position: shuffle === 'true' ? index + 1 : item.position,
+      addedAt: item.addedAt,
+      addedBy: item.addedBy
     }));
+
+    // Increment playlist play count
+    await playlist.incrementPlayCount();
 
     res.json({
       success: true,
@@ -413,9 +497,16 @@ router.get('/playlist/:id', auth, async (req, res) => {
         playlist: {
           id: playlist._id,
           name: playlist.name,
-          totalDuration: playlist.metadata.totalDuration
+          description: playlist.description,
+          coverUrl: playlist.coverUrl,
+          totalDuration: playlist.metadata.totalDuration,
+          formattedDuration: playlist.formattedDuration,
+          songCount: streamData.length,
+          playCount: playlist.playCount,
+          owner: playlist.owner
         },
-        songs: streamData
+        songs: streamData,
+        shuffled: shuffle === 'true'
       }
     });
   } catch (error) {
@@ -423,6 +514,144 @@ router.get('/playlist/:id', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to get playlist stream data',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get next song in playlist
+// @route   GET /api/stream/playlist/:playlistId/next/:currentSongId
+// @access  Private
+router.get('/playlist/:playlistId/next/:currentSongId', auth, async (req, res) => {
+  try {
+    const { playlistId, currentSongId } = req.params;
+    
+    const playlist = await Playlist.findById(playlistId)
+      .populate({
+        path: 'songs.song',
+        match: { status: 'active' }
+      });
+
+    if (!playlist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Playlist not found'
+      });
+    }
+
+    if (!playlist.hasPermission(req.user.userId, 'view')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    const validSongs = playlist.songs.filter(item => item.song);
+    const currentIndex = validSongs.findIndex(item => 
+      item.song._id.toString() === currentSongId
+    );
+
+    if (currentIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: 'Current song not found in playlist'
+      });
+    }
+
+    // Get next song (loop to beginning if at end)
+    const nextIndex = (currentIndex + 1) % validSongs.length;
+    const nextSong = validSongs[nextIndex].song;
+
+    res.json({
+      success: true,
+      data: {
+        song: {
+          id: nextSong._id,
+          title: nextSong.title,
+          artist: nextSong.artist,
+          duration: nextSong.duration,
+          coverUrl: nextSong.coverUrl,
+          streamUrl: nextSong.audioFile.secureUrl
+        },
+        position: nextIndex + 1,
+        hasNext: nextIndex < validSongs.length - 1,
+        isLoop: nextIndex === 0 && currentIndex === validSongs.length - 1
+      }
+    });
+  } catch (error) {
+    console.error('Get next song error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get next song',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Get previous song in playlist
+// @route   GET /api/stream/playlist/:playlistId/previous/:currentSongId  
+// @access  Private
+router.get('/playlist/:playlistId/previous/:currentSongId', auth, async (req, res) => {
+  try {
+    const { playlistId, currentSongId } = req.params;
+    
+    const playlist = await Playlist.findById(playlistId)
+      .populate({
+        path: 'songs.song',
+        match: { status: 'active' }
+      });
+
+    if (!playlist) {
+      return res.status(404).json({
+        success: false,
+        message: 'Playlist not found'
+      });
+    }
+
+    if (!playlist.hasPermission(req.user.userId, 'view')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    const validSongs = playlist.songs.filter(item => item.song);
+    const currentIndex = validSongs.findIndex(item => 
+      item.song._id.toString() === currentSongId
+    );
+
+    if (currentIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: 'Current song not found in playlist'
+      });
+    }
+
+    // Get previous song (loop to end if at beginning)
+    const prevIndex = currentIndex === 0 ? validSongs.length - 1 : currentIndex - 1;
+    const prevSong = validSongs[prevIndex].song;
+
+    res.json({
+      success: true,
+      data: {
+        song: {
+          id: prevSong._id,
+          title: prevSong.title,
+          artist: prevSong.artist,
+          duration: prevSong.duration,
+          coverUrl: prevSong.coverUrl,
+          streamUrl: prevSong.audioFile.secureUrl
+        },
+        position: prevIndex + 1,
+        hasPrevious: prevIndex > 0,
+        isLoop: prevIndex === validSongs.length - 1 && currentIndex === 0
+      }
+    });
+  } catch (error) {
+    console.error('Get previous song error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get previous song',
       error: error.message
     });
   }

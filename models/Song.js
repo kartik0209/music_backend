@@ -45,13 +45,12 @@ const songSchema = new mongoose.Schema({
   },
   language: {
     type: String,
-     enum: {
-    values: [
+    enum: [
       'english', 'hindi', 'gujarati', 'tamil', 'telugu', 'marathi', 
       'bengali', 'kannada', 'malayalam', 'punjabi', 'urdu', 'odia',
       'spanish', 'french', 'german', 'italian', 'portuguese', 'russian',
       'arabic', 'chinese', 'japanese', 'korean', 'none'
-    ],},
+    ],
     required: [true, 'Language is required'],
     trim: true
   },
@@ -61,19 +60,23 @@ const songSchema = new mongoose.Schema({
     hasExplicitContent: { type: Boolean, default: false }
   },
   audioFile: {
-    filename: {
+    cloudinaryId: {
       type: String,
-      required: [true, 'Audio filename is required']
+      required: [true, 'Cloudinary ID is required']
+    },
+    url: {
+      type: String,
+      required: [true, 'Audio URL is required']
+    },
+    secureUrl: {
+      type: String,
+      required: [true, 'Secure URL is required']
     },
     originalName: String,
-    path: {
-      type: String,
-      required: [true, 'Audio file path is required']
-    },
     size: Number,
     format: {
       type: String,
-      enum: ['mp3','mpeg','wav', 'flac', 'm4a', 'ogg'],
+      enum: ['mp3', 'mpeg', 'wav', 'flac', 'm4a', 'ogg'],
       required: true
     },
     bitrate: Number,
@@ -85,8 +88,9 @@ const songSchema = new mongoose.Schema({
     }
   },
   coverImage: {
-    filename: String,
-    path: String,
+    cloudinaryId: String,
+    url: String,
+    secureUrl: String,
     size: Number,
     format: String
   },
@@ -197,20 +201,17 @@ songSchema.virtual('formattedDuration').get(function() {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 });
 
-// Virtual for audio URL
+// Virtual for audio URL (use secure URL)
 songSchema.virtual('audioUrl').get(function() {
-  if (this.audioFile && this.audioFile.path) {
-    return `/api/stream/audio/${this._id}`;
-  }
-  return null;
+  return this.audioFile ? this.audioFile.secureUrl : null;
 });
 
 // Virtual for cover image URL
 songSchema.virtual('coverUrl').get(function() {
-  if (this.coverImage && this.coverImage.path) {
-    return `/uploads/covers/${this.coverImage.filename}`;
+  if (this.coverImage && this.coverImage.secureUrl) {
+    return this.coverImage.secureUrl;
   }
-  return '/uploads/covers/default-cover.jpg';
+  return 'https://via.placeholder.com/300x300/1a1a1a/ffffff?text=Music'; // Default placeholder
 });
 
 // Virtual for popularity score
