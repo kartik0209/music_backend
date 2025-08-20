@@ -70,10 +70,24 @@ const playlistStorage = new CloudinaryStorage({
 
 // File filters
 const audioFilter = (req, file, cb) => {
-  const allowedTypes = ['audio/mpeg', 'audio/wav', 'audio/flac', 'audio/m4a', 'audio/ogg'];
-  if (allowedTypes.includes(file.mimetype)) {
+  const allowedMimeTypes = [
+    'audio/mpeg', // for .mp3
+    'audio/wav',
+    'audio/flac',
+    'audio/x-flac',
+    'audio/mp4',   // for .m4a
+    'audio/x-m4a',
+    'audio/ogg'
+  ];
+
+  const fileExtension = file.originalname.split('.').pop().toLowerCase();
+  const allowedExtensions = ['mp3', 'wav', 'flac', 'm4a', 'ogg'];
+
+  if (allowedMimeTypes.includes(file.mimetype) || allowedExtensions.includes(fileExtension)) {
+    // Accept the file
     cb(null, true);
   } else {
+    // Reject the file
     cb(new Error('Invalid audio file type. Allowed: MP3, WAV, FLAC, M4A, OGG'), false);
   }
 };
@@ -88,11 +102,20 @@ const imageFilter = (req, file, cb) => {
 };
 
 // Multer configurations
+// A filter just for debugging
+const audioFilter_DEBUG = (req, file, cb) => {
+  console.log('--- DEBUGGING INCOMING FILE ---');
+  console.log('Original Filename:', file.originalname);
+  console.log('Detected MIME Type:', file.mimetype);
+  console.log('-----------------------------');
+  cb(null, true); // Accept the file to see the next error
+};
+
 const uploadAudio = multer({
   storage: audioStorage,
-  fileFilter: audioFilter,
+  fileFilter: audioFilter_DEBUG, // Use the debugging filter
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB
+    fileSize: 50 * 1024 * 1024
   }
 });
 

@@ -162,112 +162,133 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// @desc    Upload song
-// @route   POST /api/songs
-// @access  Private (Admin only)
-router.post('/', [
-  auth,
-  adminAuth,
-  uploadAudio.fields([
-    { name: 'audio', maxCount: 1 },
-    { name: 'cover', maxCount: 1 }
-  ]),
-  [
-    body('title').notEmpty().withMessage('Title is required').trim(),
-    body('artist').notEmpty().withMessage('Artist is required').trim(),
-    body('duration').isNumeric().withMessage('Duration must be a number'),
-    body('genre').notEmpty().withMessage('At least one genre is required'),
-    body('language').notEmpty().withMessage('Language is required').trim()
-  ]
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation failed',
-        errors: errors.array()
-      });
-    }
+  // @desc    Upload song
+  // @route   POST /api/songs
+  // @access  Private (Admin only)
+  const handleUpload = (req, res, next) => {
+    const upload = uploadAudio.fields([
+      { name: 'audio', maxCount: 1 },
+      { name: 'cover', maxCount: 1 }
+    ]);
 
-    if (!req.files || !req.files.audio) {
-      return res.status(400).json({
-        success: false,
-        message: 'Audio file is required'
-      });
-    }
-
-    const {
-      title,
-      artist,
-      album,
-      duration,
-      genre,
-      subGenre,
-      mood,
-      language,
-      lyrics,
-      metadata,
-      tags
-    } = req.body;
-
-    // Prepare song data
-    const songData = {
-      title,
-      artist,
-      duration: parseInt(duration),
-      genre: Array.isArray(genre) ? genre : [genre],
-      language,
-      uploadedBy: req.user.userId,
-      audioFile: {
-        cloudinaryId: req.files.audio[0].public_id,
-        url: req.files.audio[0].url,
-        secureUrl: req.files.audio[0].secure_url,
-        originalName: req.files.audio[0].originalname,
-        size: req.files.audio[0].bytes,
-        format: req.files.audio[0].format
+    upload(req, res, function (err) {
+      // This catches errors from the fileFilter (like wrong file type)
+      if (err) {
+        return res.status(400).json({
+          success: false,
+          message: err.message
+        });
       }
-    };
+      // If no errors, proceed to the next middleware in the chain
+      next();
+    });
+  };
 
-    // Optional fields
-    if (album) songData.album = typeof album === 'string' ? JSON.parse(album) : album;
-    if (subGenre) songData.subGenre = Array.isArray(subGenre) ? subGenre : [subGenre];
-    if (mood) songData.mood = Array.isArray(mood) ? mood : [mood];
-    if (lyrics) songData.lyrics = typeof lyrics === 'string' ? JSON.parse(lyrics) : lyrics;
-    if (metadata) songData.metadata = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
-    if (tags) songData.tags = Array.isArray(tags) ? tags : [tags];
+  router.post('/', [
+    auth,
+    adminAuth,
+    handleUpload,
+    
+      body('title').notEmpty().withMessage('Title is required').trim(),
+      body('artist').notEmpty().withMessage('Artist is required').trim(),
+      body('duration').isNumeric().withMessage('Duration must be a number'),
+      body('genre').notEmpty().withMessage('At least one genre is required'),
+      body('language').notEmpty().withMessage('Language is required').trim()
+    
+  ], async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Validation failed',
+          errors: errors.array()
+        });
+      }
 
-    // Handle cover image
-    if (req.files.cover) {
-      songData.coverImage = {
-        cloudinaryId: req.files.cover[0].public_id,
-        url: req.files.cover[0].url,
-        secureUrl: req.files.cover[0].secure_url,
-        size: req.files.cover[0].bytes,
-        format: req.files.cover[0].format
+
+    
+      // ADD THIS NEW CHECK
+      if (!req.files || !req.files.audio || !req.files.audio[0].path) {
+        return res.status(400).json({
+          success: false,
+          message: 'Audio file is required and failed to upload. Please check server logs.'
+        });
+      }
+      const {
+        title,
+        artist,
+        album,
+        duration,
+        genre,
+        subGenre,
+        mood,
+        language,
+        lyrics,
+        metadata,
+        tags
+      } = req.body;
+
+
+      console.log('Cloudinary Upload Result:', JSON.stringify(req.files, null, 2));
+
+      // Prepare song data
+      const songData = {
+        title,
+        artist,
+        duration: parseInt(duration),
+        genre: Array.isArray(genre) ? genre : [genre],
+      songLanguage: language,
+        uploadedBy: req.user.userId,
+        audioFile: {
+        cloudinaryId: req.files.audio[0].filename,      // Use .filename for the ID
+        url: req.files.audio[0].path,             // Use .path for the URL
+        secureUrl: req.files.audio[0].path,          // Use .path for the secure URL
+        originalName: req.files.audio[0].originalname,
+        size: req.files.audio[0].size,                // Use .size instead of .bytes
+        format: req.files.audio[0].mimetype.split('/')[1] // Get format from mimetype
+      }
       };
+
+      // Optional fields
+      if (album) songData.album = typeof album === 'string' ? JSON.parse(album) : album;
+      if (subGenre) songData.subGenre = Array.isArray(subGenre) ? subGenre : [subGenre];
+      if (mood) songData.mood = Array.isArray(mood) ? mood : [mood];
+      if (lyrics) songData.lyrics = typeof lyrics === 'string' ? JSON.parse(lyrics) : lyrics;
+      if (metadata) songData.metadata = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+      if (tags) songData.tags = Array.isArray(tags) ? tags : [tags];
+
+      // Handle cover image
+      if (req.files.cover) {
+        songData.coverImage = {
+          cloudinaryId: req.files.cover[0].public_id,
+          url: req.files.cover[0].url,
+          secureUrl: req.files.cover[0].secure_url,
+          size: req.files.cover[0].bytes,
+          format: req.files.cover[0].format
+        };
+      }
+
+      const song = await Song.create(songData);
+      await song.populate('uploadedBy', 'username profile.avatar');
+
+      res.status(201).json({
+        success: true,
+        message: 'Song uploaded successfully',
+        data: { song }
+      });
+    } catch (error) {
+      console.error('Upload song error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to upload song',
+        error: error.message
+      });
     }
-
-    const song = await Song.create(songData);
-    await song.populate('uploadedBy', 'username profile.avatar');
-
-    res.status(201).json({
-      success: true,
-      message: 'Song uploaded successfully',
-      data: { song }
-    });
-  } catch (error) {
-    console.error('Upload song error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to upload song',
-      error: error.message
-    });
-  }
-});
+  });
 
 // @desc    Update song
-// @route   PUT /api/songs/:id
+// @route   PUT /api/songs/:id 
 // @access  Private (Admin only)
 router.put('/:id', [
   auth,

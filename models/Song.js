@@ -43,7 +43,7 @@ const songSchema = new mongoose.Schema({
     enum: ['happy', 'sad', 'energetic', 'calm', 'romantic', 'angry', 'nostalgic', 'uplifting', 'melancholic', 'party'],
     default: []
   },
-  language: {
+  songLanguage: {
     type: String,
     enum: [
       'english', 'hindi', 'gujarati', 'tamil', 'telugu', 'marathi', 
@@ -76,7 +76,7 @@ const songSchema = new mongoose.Schema({
     size: Number,
     format: {
       type: String,
-      enum: ['mp3', 'mpeg', 'wav', 'flac', 'm4a', 'ogg'],
+      // enum: ['mp3', 'mpeg', 'wav', 'flac', 'm4a', 'ogg'],
       required: true
     },
     bitrate: Number,

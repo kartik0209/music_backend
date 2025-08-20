@@ -133,12 +133,12 @@ userSchema.index({ 'listeningHistory.playedAt': -1 });
 
 // Virtual for follower count
 userSchema.virtual('followerCount').get(function() {
-  return this.social.followers.length;
+  return this.social?.followers?.length || 0;
 });
 
 // Virtual for following count
 userSchema.virtual('followingCount').get(function() {
-  return this.social.following.length;
+  return this.social?.following?.length || 0;
 });
 
 // Virtual for full name
