@@ -1,5 +1,4 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const { body, validationResult } = require('express-validator');
@@ -12,9 +11,7 @@ const router = express.Router();
 router.post('/register', [
   body('username')
     .isLength({ min: 3, max: 30 })
-    .withMessage('Username must be between 3 and 30 characters')
-    .matches(/^[a-zA-Z0-9_]+$/)
-    .withMessage('Username can only contain letters, numbers, and underscores'),
+    .withMessage('Username must be between 3 and 30 characters'),
   body('email').isEmail().withMessage('Please enter a valid email'),
   body('password')
     .isLength({ min: 6 })
@@ -50,14 +47,12 @@ router.post('/register', [
     const userData = {
       username,
       email,
-      password
+      password,
+      profile: {}
     };
 
-    if (firstName) userData.profile = { firstName };
-    if (lastName) {
-      if (!userData.profile) userData.profile = {};
-      userData.profile.lastName = lastName;
-    }
+    if (firstName) userData.profile.firstName = firstName;
+    if (lastName) userData.profile.lastName = lastName;
 
     const user = await User.create(userData);
 
@@ -73,8 +68,7 @@ router.post('/register', [
           username: user.username,
           email: user.email,
           role: user.role,
-          profile: user.profile,
-          avatarUrl: user.avatarUrl
+          profile: user.profile
         },
         token
       }
@@ -132,7 +126,7 @@ router.post('/login', [
     }
 
     // Check password
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       return res.status(401).json({
         success: false,
@@ -152,8 +146,7 @@ router.post('/login', [
           username: user.username,
           email: user.email,
           role: user.role,
-          profile: user.profile,
-          avatarUrl: user.avatarUrl
+          profile: user.profile
         },
         token
       }
@@ -175,7 +168,8 @@ router.get('/profile', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.userId)
       .select('-password')
-      .populate('playlists', 'name description');
+      .populate('followers', 'username profile.firstName profile.lastName')
+      .populate('following', 'username profile.firstName profile.lastName');
 
     if (!user) {
       return res.status(404).json({
@@ -186,9 +180,7 @@ router.get('/profile', auth, async (req, res) => {
 
     res.json({
       success: true,
-      data: {
-        user
-      }
+      data: { user }
     });
   } catch (error) {
     console.error('Get profile error:', error);
@@ -198,6 +190,69 @@ router.get('/profile', auth, async (req, res) => {
       error: error.message
     });
   }
+});
+
+// @desc    Get current logged-in user
+// @route   GET /api/auth/me
+// @access  Private
+router.get('/me', auth, async (req, res) => { // CHANGED FROM '/profile' TO '/me'
+  try {
+    const user = await User.findById(req.user.userId)
+      .select('-password')
+      .populate('followers', 'username profile.firstName profile.lastName')
+      .populate('following', 'username profile.firstName profile.lastName');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { user }
+    });
+  } catch (error) {
+    console.error('Get me error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get user data',
+      error: error.message
+    });
+  }
+});
+
+
+// Add this route to your existing routes/auth.js file
+
+// @desc    Change user password
+// @route   PUT /api/auth/change-password
+// @access  Private
+router.put('/change-password', [auth], async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        const userId = req.user.userId;
+
+        const user = await User.findById(userId).select('+password');
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        const isMatch = await user.comparePassword(currentPassword);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: 'Incorrect current password' });
+        }
+
+        user.password = newPassword;
+        await user.save();
+
+        res.json({ success: true, message: 'Password changed successfully' });
+
+    } catch (error) {
+        console.error('Change password error:', error);
+        res.status(500).json({ success: false, message: 'Server Error' });
+    }
 });
 
 module.exports = router;

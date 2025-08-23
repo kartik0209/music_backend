@@ -5,16 +5,12 @@ const auth = async (req, res, next) => {
   try {
     let token;
 
-    // Check for token in Authorization header
+    // Get token from header
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
       token = req.headers.authorization.split(' ')[1];
     }
 
-    // Check for token in cookies (if implementing cookie-based auth)
-    if (!token && req.cookies && req.cookies.token) {
-      token = req.cookies.token;
-    }
-
+    // Check if token exists
     if (!token) {
       return res.status(401).json({
         success: false,
@@ -22,47 +18,35 @@ const auth = async (req, res, next) => {
       });
     }
 
-    try {
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-      
-      // Get user from database
-      const user = await User.findById(decoded.userId);
-      
-      if (!user) {
-        return res.status(401).json({
-          success: false,
-          message: 'Token is valid but user not found'
-        });
-      }
-
-      // Check if user account is active
-      if (user.accountStatus !== 'active') {
-        return res.status(401).json({
-          success: false,
-          message: `Account is ${user.accountStatus}. Access denied.`
-        });
-      }
-
-      // Add user info to request
-      req.user = {
-        userId: decoded.userId,
-        username: decoded.username,
-        role: decoded.role
-      };
-
-      next();
-    } catch (tokenError) {
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    
+    // Get user from token
+    const user = await User.findById(decoded.userId).select('-password');
+    
+    if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token'
+        message: 'Token is not valid'
       });
     }
+
+    // Check if user account is active
+    if (user.accountStatus !== 'active') {
+      return res.status(401).json({
+        success: false,
+        message: 'Account is not active'
+      });
+    }
+
+    // Add user to request
+    req.user = decoded;
+    next();
   } catch (error) {
     console.error('Auth middleware error:', error);
-    return res.status(500).json({
+    res.status(401).json({
       success: false,
-      message: 'Server error in authentication'
+      message: 'Token is not valid'
     });
   }
 };

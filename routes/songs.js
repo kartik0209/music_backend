@@ -8,84 +8,122 @@ const { body, validationResult } = require('express-validator');
 
 const router = express.Router();
 
-// @desc    Get all songs with filters and pagination
-// @route   GET /api/songs
-// @access  Public
-router.get('/', async (req, res) => {
-  try {
-    const {
-      page = 1,
-      limit = 20,
-      search,
-      genre,
-      language,
-      mood,
-      artist,
-      minRating,
-      sortBy = 'playCount',
-      sortOrder = 'desc'
-    } = req.query;
 
-    const filters = {};
-    
-    // Build filters
-    if (genre) filters.genre = genre.split(',');
-    if (language) filters.language = language;
-    if (mood) filters.mood = mood.split(',');
-    if (artist) filters.artist = artist;
-    if (minRating) filters.minRating = parseFloat(minRating);
 
-    // Search songs
-    const songs = await Song.searchSongs(search, filters);
 
-    // Apply sorting
-    const sortOptions = {};
-    sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1;
-    
-    const paginatedSongs = await Song.aggregate([
-      { $match: { _id: { $in: songs.map(s => s._id) } } },
-      { $sort: sortOptions },
-      { $skip: (page - 1) * parseInt(limit) },
-      { $limit: parseInt(limit) },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'uploadedBy',
-          foreignField: '_id',
-          as: 'uploadedBy',
-          pipeline: [
-            { $project: { username: 1, 'profile.avatar': 1 } }
-          ]
-        }
-      },
-      { $unwind: '$uploadedBy' }
-    ]);
 
-    // Get total count for pagination
-    const total = songs.length;
+// @desc    Get song statistics (Admin only)
+// @route   GET /api/songs/stats
+// @access  Private (Admin)
+router.get('/stats', [auth, adminAuth], async (req, res) => {
+    try {
+        const [total, active, featured, totalPlaysResult] = await Promise.all([
+            Song.countDocuments(),
+            Song.countDocuments({ status: 'active' }),
+            Song.countDocuments({ featured: true }),
+            Song.aggregate([{ $group: { _id: null, totalPlays: { $sum: '$playCount' } } }])
+        ]);
 
-    res.json({
-      success: true,
-      data: {
-        songs: paginatedSongs,
-        pagination: {
-          current: parseInt(page),
-          pages: Math.ceil(total / limit),
-          total,
-          hasNext: page * limit < total,
-          hasPrev: page > 1
-        }
-      }
-    });
-  } catch (error) {
-    console.error('Get songs error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch songs',
-      error: error.message
-    });
-  }
+        const totalPlays = totalPlaysResult.length > 0 ? totalPlaysResult[0].totalPlays : 0;
+
+        res.json({
+            success: true,
+            data: { total, active, featured, totalPlays }
+        });
+    } catch (error) {
+        console.error('Get song stats error:', error);
+        res.status(500).json({ success: false, message: 'Server Error' });
+    }
 });
+
+
+// @desc    Get all songs with filtering and pagination
+// @route   GET /api/songs
+// @access  Private (Admin)
+router.get('/', [auth], async (req, res) => {
+    try {
+        const {
+            page = 1, limit = 10, search, genre, language,
+            status, featured, sortBy = 'uploadDate', sortOrder = 'desc'
+        } = req.query;
+
+        const query = {};
+        if (search) {
+            query.$or = [
+                { title: { $regex: search, $options: 'i' } },
+                { artist: { $regex: search, $options: 'i' } },
+                { 'album.name': { $regex: search, $options: 'i' } }
+            ];
+        }
+        if (genre) query.genre = genre;
+        if (language) query.language = language;
+        if (status) query.status = status;
+        if (featured) query.featured = featured === 'true';
+
+        const sortOptions = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
+
+        const songs = await Song.find(query)
+            .populate('uploadedBy', 'username profile.avatar')
+            .sort(sortOptions)
+            .skip((parseInt(page) - 1) * parseInt(limit))
+            .limit(parseInt(limit));
+
+        const total = await Song.countDocuments(query);
+
+        res.json({
+            success: true,
+            data: {
+                songs,
+                pagination: {
+                    total,
+                    currentPage: parseInt(page),
+                    totalPages: Math.ceil(total / limit)
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Get songs error:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch songs' });
+    }
+});
+
+// @desc    Toggle featured status
+// @route   PUT /api/songs/:id/featured
+// @access  Private (Admin)
+router.put('/:id/featured', [auth], async (req, res) => {
+    try {
+        const song = await Song.findById(req.params.id);
+        if (!song) {
+            return res.status(404).json({ success: false, message: 'Song not found' });
+        }
+        song.featured = !song.featured;
+        await song.save();
+        res.json({
+            success: true,
+            message: `Song ${song.featured ? 'featured' : 'unfeatured'} successfully.`,
+            data: { song }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to update featured status' });
+    }
+});
+
+
+// @desc    Delete song (soft delete)
+// @route   DELETE /api/songs/:id
+// @access  Private (Admin)
+router.delete('/:id', [auth, adminAuth], async (req, res) => {
+    try {
+        const song = await Song.findByIdAndUpdate(req.params.id, { status: 'inactive' });
+        if (!song) {
+            return res.status(404).json({ success: false, message: 'Song not found' });
+        }
+        res.json({ success: true, message: 'Song deleted successfully.' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to delete song' });
+    }
+});
+
 
 // @desc    Get trending songs
 // @route   GET /api/songs/trending
@@ -290,98 +328,66 @@ router.get('/:id', async (req, res) => {
 // @desc    Update song
 // @route   PUT /api/songs/:id 
 // @access  Private (Admin only)
-router.put('/:id', [
-  auth,
-  adminAuth,
-  uploadImage.single('cover')
-], async (req, res) => {
-  try {
-    const song = await Song.findById(req.params.id);
-
-    if (!song) {
-      return res.status(404).json({
-        success: false,
-        message: 'Song not found'
-      });
-    }
-
-    // Update fields
-    const updates = { ...req.body };
-    
-    // Handle cover image upload
-    if (req.file) {
-      updates.coverImage = {
-        cloudinaryId: req.file.public_id,
-        url: req.file.url,
-        secureUrl: req.file.secure_url,
-        size: req.file.bytes,
-        format: req.file.format
-      };
-    }
-
-    // Parse JSON fields if they exist
-    if (updates.album && typeof updates.album === 'string') {
-      updates.album = JSON.parse(updates.album);
-    }
-    if (updates.lyrics && typeof updates.lyrics === 'string') {
-      updates.lyrics = JSON.parse(updates.lyrics);
-    }
-    if (updates.metadata && typeof updates.metadata === 'string') {
-      updates.metadata = JSON.parse(updates.metadata);
-    }
-
-    // Update the song
-    const updatedSong = await Song.findByIdAndUpdate(
-      req.params.id,
-      updates,
-      { new: true, runValidators: true }
-    ).populate('uploadedBy', 'username profile.avatar');
-
-    res.json({
-      success: true,
-      message: 'Song updated successfully',
-      data: { song: updatedSong }
-    });
-  } catch (error) {
-    console.error('Update song error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update song',
-      error: error.message
-    });
-  }
-});
-
-// @desc    Delete song
-// @route   DELETE /api/songs/:id
+// @desc    Update song
+// @route   PUT /api/songs/:id
 // @access  Private (Admin only)
-router.delete('/:id', [auth, adminAuth], async (req, res) => {
-  try {
-    const song = await Song.findById(req.params.id);
+router.put('/:id', [
+    auth,
+    adminAuth,
+    uploadAudio.single('cover') // Assuming 'uploadAudio' is your configured multer instance
+], async (req, res) => {
+    try {
+        const {
+            title, artist, duration, language, albumName,
+            genre, mood, tags, featured
+        } = req.body;
 
-    if (!song) {
-      return res.status(404).json({
-        success: false,
-        message: 'Song not found'
-      });
+        const updates = {
+            title, artist, duration, language, featured
+        };
+
+        // Handle arrays correctly, whether one or many are sent from the form
+        if (genre) updates.genre = Array.isArray(genre) ? genre : [genre];
+        if (mood) updates.mood = Array.isArray(mood) ? mood : [mood];
+        if (tags) updates.tags = Array.isArray(tags) ? tags : [tags];
+
+        // Handle nested album object
+        if (albumName) {
+            updates.album = { name: albumName };
+        }
+
+        // Handle new cover image upload
+        if (req.file) {
+            updates.coverUrl = req.file.path; // Correctly update the 'coverUrl' field
+        }
+
+        // Find and update the song in a single operation
+        const updatedSong = await Song.findByIdAndUpdate(
+            req.params.id,
+            { $set: updates },
+            { new: true, runValidators: true }
+        ).populate('uploadedBy', 'username profile.avatar');
+
+        if (!updatedSong) {
+            return res.status(404).json({
+                success: false,
+                message: 'Song not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Song updated successfully',
+            data: { song: updatedSong }
+        }); 
+    } catch (error) {
+        console.error('Update song error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update song',
+            error: error.message
+        });
     }
-
-    // Soft delete - change status instead of removing
-    song.status = 'inactive';
-    await song.save();
-
-    res.json({
-      success: true,
-      message: 'Song deleted successfully'
-    });
-  } catch (error) {
-    console.error('Delete song error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete song',
-      error: error.message
-    });
-  }
 });
 
 // @desc    Play song (increment play count)
@@ -749,5 +755,12 @@ router.get('/user/history', auth, async (req, res) => {
     });
   }
 });
+
+
+
+
+
+// Other routes from your file like POST, PUT for edits, etc., would remain here.
+
 
 module.exports = router;

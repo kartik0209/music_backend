@@ -92,15 +92,15 @@ const audioFilter = (req, file, cb) => {
   }
 };
 
-const imageFilter = (req, file, cb) => {
-  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+// This is the old, incorrect code
+const imageFileFilter = (req, file, cb) => {
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/webp']; // PNG is missing
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Invalid image file type. Allowed: JPEG, JPG, PNG, WEBP'), false);
+    cb(new Error('Image file format not allowed'), false);
   }
 };
-
 // Multer configurations
 // A filter just for debugging
 const audioFilter_DEBUG = (req, file, cb) => {
@@ -121,7 +121,7 @@ const uploadAudio = multer({
 
 const uploadImage = multer({
   storage: imageStorage,
-  fileFilter: imageFilter,
+  fileFilter:imageFileFilter,
   limits: {
     fileSize: 5 * 1024 * 1024 // 5MB
   }
@@ -129,7 +129,7 @@ const uploadImage = multer({
 
 const uploadAvatar = multer({
   storage: avatarStorage,
-  fileFilter: imageFilter,
+  fileFilter:imageFileFilter,
   limits: {
     fileSize: 2 * 1024 * 1024 // 2MB
   }
@@ -137,7 +137,7 @@ const uploadAvatar = multer({
 
 const uploadPlaylistCover = multer({
   storage: playlistStorage,
-  fileFilter: imageFilter,
+  fileFilter:imageFileFilter,
   limits: {
     fileSize: 3 * 1024 * 1024 // 3MB
   }
